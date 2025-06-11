@@ -1,0 +1,372 @@
+﻿<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:AUTOMATED_REACTOR_CONTROL_Ver6_AVALONIA.ViewModels"
+        xmlns:controls="using:AUTOMATED_REACTOR_CONTROL_Ver6_AVALONIA.Views.Controls"
+        x:Class="AUTOMATED_REACTOR_CONTROL_Ver6_AVALONIA.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/ReactorControlIcon.ico"
+        Title="{Binding WindowTitle}"
+        Width="1400" Height="900"
+        MinWidth="1200" MinHeight="700"
+        WindowStartupLocation="CenterScreen"
+        Background="#FF1E1E1E"
+        FontFamily="Segoe UI">
+
+	<Window.Styles>
+		<!-- Modern Dark Theme Styles -->
+		<Style Selector="Button.modern-nav">
+			<Setter Property="Background" Value="#FF2D2D30"/>
+			<Setter Property="Foreground" Value="#FFDDDDDD"/>
+			<Setter Property="BorderBrush" Value="#FF3F3F46"/>
+			<Setter Property="BorderThickness" Value="1"/>
+			<Setter Property="CornerRadius" Value="4"/>
+			<Setter Property="Padding" Value="12,8"/>
+			<Setter Property="Margin" Value="2"/>
+			<Setter Property="FontWeight" Value="Medium"/>
+			<Setter Property="Transitions">
+				<Transitions>
+					<BrushTransition Property="Background" Duration="0:0:0.2"/>
+					<TransformTransition Property="RenderTransform" Duration="0:0:0.1"/>
+				</Transitions>
+			</Setter>
+		</Style>
+
+		<Style Selector="Button.modern-nav:pointerover">
+			<Setter Property="Background" Value="#FF3E3E42"/>
+			<Setter Property="RenderTransform" Value="scale(1.05)"/>
+		</Style>
+
+		<Style Selector="Button.modern-nav:pressed">
+			<Setter Property="Background" Value="#FF007ACC"/>
+			<Setter Property="RenderTransform" Value="scale(0.98)"/>
+		</Style>
+
+		<Style Selector="Button.active">
+			<Setter Property="Background" Value="#FF007ACC"/>
+			<Setter Property="Foreground" Value="White"/>
+		</Style>
+
+		<!-- Status Panel Styles -->
+		<Style Selector="Panel.status-panel">
+			<Setter Property="Background" Value="#FF252526"/>
+			<Setter Property="Height" Value="32"/>
+		</Style>
+
+		<!-- Connection Indicator Styles -->
+		<Style Selector="Ellipse.connection-good">
+			<Setter Property="Fill" Value="#FF4CAF50"/>
+		</Style>
+
+		<Style Selector="Ellipse.connection-warning">
+			<Setter Property="Fill" Value="#FFFF9800"/>
+		</Style>
+
+		<Style Selector="Ellipse.connection-error">
+			<Setter Property="Fill" Value="#FFF44336"/>
+		</Style>
+	</Window.Styles>
+
+	<Grid>
+		<Grid.RowDefinitions>
+			<RowDefinition Height="Auto"/>
+			<!-- Header -->
+			<RowDefinition Height="Auto"/>
+			<!-- Navigation -->
+			<RowDefinition Height="*"/>
+			<!-- Content -->
+			<RowDefinition Height="Auto"/>
+			<!-- Status Bar -->
+		</Grid.RowDefinitions>
+
+		<!-- 🎨 Modern Header -->
+		<Border Grid.Row="0"
+				Background="#FF007ACC"
+				Height="60"
+				BoxShadow="0 2 8 0 #33000000">
+			<Grid Margin="20,0">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto"/>
+					<ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="Auto"/>
+				</Grid.ColumnDefinitions>
+
+				<!-- App Icon & Title -->
+				<StackPanel Grid.Column="0"
+							Orientation="Horizontal"
+							VerticalAlignment="Center">
+					<controls:ModernIcon IconType="Reactor"
+										 Size="32"
+										 Foreground="White"
+										 Margin="0,0,12,0"/>
+					<StackPanel VerticalAlignment="Center">
+						<TextBlock Text="AUTOMATED REACTOR CONTROL"
+								   FontSize="16"
+								   FontWeight="Bold"
+								   Foreground="White"/>
+						<TextBlock Text="Ultra-Modern Version 6.0"
+								   FontSize="11"
+								   Foreground="#FFCCCCCC"/>
+					</StackPanel>
+				</StackPanel>
+
+				<!-- Current View Info -->
+				<StackPanel Grid.Column="1"
+							VerticalAlignment="Center"
+							HorizontalAlignment="Center">
+					<TextBlock Text="{Binding CurrentViewTitle}"
+							   FontSize="14"
+							   FontWeight="Medium"
+							   Foreground="White"
+							   HorizontalAlignment="Center"/>
+					<TextBlock Text="{Binding CurrentViewDescription}"
+							   FontSize="10"
+							   Foreground="#FFCCCCCC"
+							   HorizontalAlignment="Center"/>
+				</StackPanel>
+
+				<!-- Header Controls -->
+				<StackPanel Grid.Column="2"
+							Orientation="Horizontal"
+							VerticalAlignment="Center">
+					<!-- Performance Monitor -->
+					<controls:PerformanceDisplay Margin="0,0,16,0"/>
+
+					<!-- Connection Status -->
+					<controls:ConnectionIndicator Status="{Binding ConnectionStatus}"
+												  Margin="0,0,16,0"/>
+
+					<!-- Settings Button -->
+					<Button Classes="modern-nav"
+							Background="Transparent"
+							BorderThickness="1"
+							BorderBrush="#FFCCCCCC"
+							Command="{Binding ShowSettingsCommand}"
+							ToolTip.Tip="Settings">
+						<controls:ModernIcon IconType="Settings" Size="16" Foreground="White"/>
+					</Button>
+				</StackPanel>
+			</Grid>
+		</Border>
+
+		<!-- 🚀 Modern Navigation Bar -->
+		<Border Grid.Row="1"
+				Background="#FF2D2D30"
+				BorderBrush="#FF3F3F46"
+				BorderThickness="0,0,0,1">
+			<Grid Margin="20,8">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="Auto"/>
+				</Grid.ColumnDefinitions>
+
+				<!-- Navigation Buttons -->
+				<StackPanel Grid.Column="0"
+							Orientation="Horizontal">
+					<Button Classes="modern-nav"
+							Classes.active="{Binding IsControlSet1Active}"
+							Command="{Binding NavigateToControlSet1Command}"
+							ToolTip.Tip="Control Set 1 - Primary Reactor Controls">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="ControlPanel" Size="16" Margin="0,0,8,0"/>
+							<TextBlock Text="Control Set 1"/>
+						</StackPanel>
+					</Button>
+
+					<Button Classes="modern-nav"
+							Classes.active="{Binding IsControlSet2Active}"
+							Command="{Binding NavigateToControlSet2Command}"
+							ToolTip.Tip="Control Set 2 - Secondary Reactor Controls">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="ControlPanel" Size="16" Margin="0,0,8,0"/>
+							<TextBlock Text="Control Set 2"/>
+						</StackPanel>
+					</Button>
+
+					<Button Classes="modern-nav"
+							Classes.active="{Binding IsProgramSet1Active}"
+							Command="{Binding NavigateToProgramSet1Command}"
+							ToolTip.Tip="Program Control Set 1 - Automated Sequences">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="Program" Size="16" Margin="0,0,8,0"/>
+							<TextBlock Text="Program Set 1"/>
+						</StackPanel>
+					</Button>
+
+					<Button Classes="modern-nav"
+							Classes.active="{Binding IsProgramSet2Active}"
+							Command="{Binding NavigateToProgramSet2Command}"
+							ToolTip.Tip="Program Control Set 2 - Advanced Automation">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="Program" Size="16" Margin="0,0,8,0"/>
+							<TextBlock Text="Program Set 2"/>
+						</StackPanel>
+					</Button>
+
+					<Button Classes="modern-nav"
+							Classes.active="{Binding IsGraphData1Active}"
+							Command="{Binding NavigateToGraphData1Command}"
+							ToolTip.Tip="Graph Data Set 1 - Real-time Monitoring">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="Graph" Size="16" Margin="0,0,8,0"/>
+							<TextBlock Text="Graph Data 1"/>
+						</StackPanel>
+					</Button>
+
+					<Button Classes="modern-nav"
+							Classes.active="{Binding IsGraphData2Active}"
+							Command="{Binding NavigateToGraphData2Command}"
+							ToolTip.Tip="Graph Data Set 2 - Historical Analysis">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="Graph" Size="16" Margin="0,0,8,0"/>
+							<TextBlock Text="Graph Data 2"/>
+						</StackPanel>
+					</Button>
+				</StackPanel>
+
+				<!-- Quick Actions -->
+				<StackPanel Grid.Column="1"
+							Orientation="Horizontal">
+					<Button Classes="modern-nav"
+							Command="{Binding EmergencyStopCommand}"
+							Background="#FFD32F2F"
+							ToolTip.Tip="Emergency Stop All Operations">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="Stop" Size="16" Margin="0,0,6,0"/>
+							<TextBlock Text="EMERGENCY"/>
+						</StackPanel>
+					</Button>
+
+					<Button Classes="modern-nav"
+							Command="{Binding SaveAllCommand}"
+							ToolTip.Tip="Save All Data">
+						<StackPanel Orientation="Horizontal">
+							<controls:ModernIcon IconType="Save" Size="16" Margin="0,0,6,0"/>
+							<TextBlock Text="Save All"/>
+						</StackPanel>
+					</Button>
+				</StackPanel>
+			</Grid>
+		</Border>
+
+		<!-- 🎯 Main Content Area with Hardware-Accelerated Container -->
+		<Border Grid.Row="2"
+				Background="#FF1E1E1E"
+				Margin="2">
+			<Grid>
+				<!-- Main Content Host -->
+				<controls:ModernViewHost x:Name="MainContentHost"
+										 CurrentView="{Binding CurrentView}"
+										 IsAnimating="{Binding IsNavigating}"
+										 ClipToBounds="True"/>
+
+				<!-- Loading Overlay -->
+				<controls:LoadingOverlay IsVisible="{Binding IsLoading}"
+										 LoadingText="{Binding LoadingText}"
+										 Progress="{Binding LoadingProgress}"/>
+
+				<!-- Emergency Overlay -->
+				<Border IsVisible="{Binding IsEmergencyMode}"
+						Background="#88FF0000"
+						ZIndex="1000">
+					<StackPanel VerticalAlignment="Center"
+								HorizontalAlignment="Center">
+						<controls:ModernIcon IconType="Warning"
+											 Size="64"
+											 Foreground="White"
+											 HorizontalAlignment="Center"/>
+						<TextBlock Text="EMERGENCY MODE ACTIVE"
+								   FontSize="24"
+								   FontWeight="Bold"
+								   Foreground="White"
+								   HorizontalAlignment="Center"
+								   Margin="0,16,0,8"/>
+						<TextBlock Text="{Binding EmergencyMessage}"
+								   FontSize="14"
+								   Foreground="White"
+								   HorizontalAlignment="Center"
+								   TextAlignment="Center"/>
+						<Button Classes="modern-nav"
+								Background="#FF4CAF50"
+								Command="{Binding ClearEmergencyCommand}"
+								Margin="0,16,0,0"
+								Padding="20,8">
+							<TextBlock Text="CLEAR EMERGENCY" FontWeight="Bold"/>
+						</Button>
+					</StackPanel>
+				</Border>
+			</Grid>
+		</Border>
+
+		<!-- 📊 Modern Status Bar -->
+		<Border Grid.Row="3"
+				Classes="status-panel"
+				BorderBrush="#FF3F3F46"
+				BorderThickness="0,1,0,0">
+			<Grid Margin="20,4">
+				<Grid.ColumnDefinitions>
+					<ColumnDefinition Width="Auto"/>
+					<ColumnDefinition Width="*"/>
+					<ColumnDefinition Width="Auto"/>
+					<ColumnDefinition Width="Auto"/>
+					<ColumnDefinition Width="Auto"/>
+				</Grid.ColumnDefinitions>
+
+				<!-- System Status -->
+				<StackPanel Grid.Column="0"
+							Orientation="Horizontal"
+							VerticalAlignment="Center">
+					<Ellipse Width="8" Height="8"
+							 Classes.connection-good="{Binding IsSystemOnline}"
+							 Classes.connection-error="{Binding !IsSystemOnline}"
+							 Margin="0,0,6,0"/>
+					<TextBlock Text="{Binding SystemStatus}"
+							   FontSize="11"
+							   Foreground="#FFCCCCCC"/>
+				</StackPanel>
+
+				<!-- Real-time Info -->
+				<TextBlock Grid.Column="1"
+						   Text="{Binding StatusMessage}"
+						   FontSize="11"
+						   Foreground="#FFCCCCCC"
+						   VerticalAlignment="Center"
+						   Margin="20,0"/>
+
+				<!-- Performance Metrics -->
+				<StackPanel Grid.Column="2"
+							Orientation="Horizontal"
+							VerticalAlignment="Center">
+					<TextBlock Text="{Binding FpsDisplay, StringFormat='{}{0} FPS'}"
+							   FontSize="11"
+							   Foreground="#FFCCCCCC"
+							   Margin="0,0,16,0"/>
+					<TextBlock Text="{Binding MemoryUsage, StringFormat='Memory: {0} MB'}"
+							   FontSize="11"
+							   Foreground="#FFCCCCCC"
+							   Margin="0,0,16,0"/>
+				</StackPanel>
+
+				<!-- Connection Details -->
+				<StackPanel Grid.Column="3"
+							Orientation="Horizontal"
+							VerticalAlignment="Center">
+					<TextBlock Text="Serial:"
+							   FontSize="11"
+							   Foreground="#FFCCCCCC"
+							   Margin="0,0,4,0"/>
+					<Ellipse Width="6" Height="6"
+							 Classes.connection-good="{Binding IsSerialConnected}"
+							 Classes.connection-error="{Binding !IsSerialConnected}"
+							 Margin="0,0,12,0"/>
+				</StackPanel>
+
+				<!-- Last Update Time -->
+				<TextBlock Grid.Column="4"
+						   Text="{Binding LastUpdateTime, StringFormat='Last Update: {0:HH:mm:ss}'}"
+						   FontSize="11"
+						   Foreground="#FF999999"
+						   VerticalAlignment="Center"/>
+			</Grid>
+		</Border>
+	</Grid>
+</Window>
