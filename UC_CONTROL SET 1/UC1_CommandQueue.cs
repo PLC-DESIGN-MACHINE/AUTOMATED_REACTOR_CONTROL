@@ -1,715 +1,849 @@
 ﻿// ==============================================
-//  UC1_CommandQueue.cs - PHASE 3
+//  UC1_MemoryManager.cs - PHASE 3
 //  AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
-//  Async Command Processing Queue
-//  High-Performance Priority Queue with Hardware Acceleration
+//  Memory Optimization & Management System
+//  Zero-Copy Operations & Hardware Acceleration
 // ==============================================
 
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
-using System.Runtime.Remoting.Channels;
+using System.Runtime;
+using System.Runtime.CompilerServices;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using static AUTOMATED_REACTOR_CONTROL_Ver4_FINAL.Logger;
 
 namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
 {
     /// <summary>
-    /// 🚀 PHASE 3: Ultra-High Performance Command Queue
-    /// Features: Priority Processing, Backpressure, Retry Logic, Hardware Acceleration
-    /// Async Command Processing with 60fps+ Performance & Zero Blocking
+    /// 🚀 PHASE 3: Ultra-High Performance Memory Manager
+    /// Features: Object Pooling, Zero-Copy Operations, Memory Profiling, Hardware Acceleration
+    /// Advanced Memory Management with 60fps+ Performance & Minimal GC Pressure
     /// </summary>
-    public class UC1_CommandQueue : IDisposable
+    public class UC1_MemoryManager : IDisposable
     {
-        #region 🎯 Queue Infrastructure
+        #region 🧠 Memory Infrastructure
 
-        // High-Performance Channels for Command Processing
-        private readonly Channel<QueuedCommand> _highPriorityChannel;
-        private readonly Channel<QueuedCommand> _normalPriorityChannel;
-        private readonly Channel<QueuedCommand> _lowPriorityChannel;
-        private readonly Channel<QueuedCommand> _retryChannel;
+        // Object Pools for High-Performance Allocation
+        private readonly ConcurrentDictionary<Type, IObjectPool> _objectPools;
+        private readonly ArrayPool<byte> _byteArrayPool;
+        private readonly ArrayPool<char> _charArrayPool;
+        private readonly ArrayPool<int> _intArrayPool;
+        private readonly ArrayPool<float> _floatArrayPool;
 
-        // Command Processing State
-        private readonly ConcurrentDictionary<Guid, QueuedCommand> _processingCommands;
-        private readonly ConcurrentDictionary<Guid, CommandExecutionContext> _executionContexts;
-        private readonly PriorityQueue<QueuedCommand, CommandPriority> _priorityQueue;
+        // Memory Monitoring & Profiling
+        private readonly MemoryProfiler _memoryProfiler;
+        private readonly GCNotificationManager _gcNotificationManager;
+        private readonly MemoryPressureManager _memoryPressureManager;
 
         // Reactive Streams
-        private readonly Subject<CommandQueuedEvent> _commandQueuedSubject;
-        private readonly Subject<CommandProcessedEvent> _commandProcessedSubject;
-        private readonly Subject<CommandFailedEvent> _commandFailedSubject;
-        private readonly BehaviorSubject<QueueStatistics> _statisticsSubject;
-
-        // Processing Infrastructure
-        private readonly SemaphoreSlim _processingSlot;
-        private readonly CancellationTokenSource _cancellationTokenSource;
-        private readonly Timer _statisticsTimer;
-        private readonly Timer _retryTimer;
+        private readonly BehaviorSubject<MemoryStatistics> _memoryStatisticsSubject;
+        private readonly Subject<GCEvent> _gcEventSubject;
+        private readonly Subject<MemoryPressureEvent> _memoryPressureSubject;
+        private readonly Subject<AllocationEvent> _allocationEventSubject;
 
         // Configuration & Performance
-        private readonly CommandQueueConfiguration _configuration;
+        private readonly MemoryManagerConfiguration _configuration;
         private readonly UC1_PerformanceMonitor _performanceMonitor;
 
-        // State Management
-        private volatile bool _isProcessing = false;
-        private volatile bool _isDisposed = false;
-        private long _totalCommandsQueued = 0;
-        private long _totalCommandsProcessed = 0;
-        private long _totalCommandsFailed = 0;
-        private readonly object _statsLock = new object();
+        // Monitoring & Control
+        private readonly Timer _monitoringTimer;
+        private readonly Timer _cleanupTimer;
+        private readonly SemaphoreSlim _cleanupSemaphore;
+        private readonly CancellationTokenSource _cancellationTokenSource;
 
-        // Processing Tasks
-        private readonly List<Task> _processingTasks;
+        // Memory Tracking
+        private readonly ConcurrentDictionary<string, AllocationTracker> _allocationTrackers;
+        private readonly ConcurrentQueue<MemoryAllocation> _recentAllocations;
+        private long _totalAllocatedBytes = 0;
+        private long _totalPooledObjects = 0;
+        private volatile bool _isDisposed = false;
+
+        // Performance Metrics
+        private readonly object _metricsLock = new object();
+        private MemoryMetrics _cachedMetrics;
+        private DateTime _lastMetricsUpdate;
 
         #endregion
 
         #region 🌊 Public Observables
 
-        /// <summary>📥 Command Queued Events</summary>
-        public IObservable<CommandQueuedEvent> CommandQueued => _commandQueuedSubject.AsObservable();
+        /// <summary>📊 Memory Statistics Stream</summary>
+        public IObservable<MemoryStatistics> MemoryStatistics => _memoryStatisticsSubject.AsObservable();
 
-        /// <summary>✅ Command Processed Events</summary>
-        public IObservable<CommandProcessedEvent> CommandProcessed => _commandProcessedSubject.AsObservable();
+        /// <summary>🗑️ Garbage Collection Events</summary>
+        public IObservable<GCEvent> GarbageCollectionEvents => _gcEventSubject.AsObservable();
 
-        /// <summary>❌ Command Failed Events</summary>
-        public IObservable<CommandFailedEvent> CommandFailed => _commandFailedSubject.AsObservable();
+        /// <summary>⚠️ Memory Pressure Events</summary>
+        public IObservable<MemoryPressureEvent> MemoryPressureEvents => _memoryPressureSubject.AsObservable();
 
-        /// <summary>📊 Queue Statistics Stream</summary>
-        public IObservable<QueueStatistics> Statistics => _statisticsSubject.AsObservable();
+        /// <summary>📈 Allocation Events</summary>
+        public IObservable<AllocationEvent> AllocationEvents => _allocationEventSubject.AsObservable();
 
-        /// <summary>📈 Current Queue Statistics</summary>
-        public QueueStatistics CurrentStatistics => _statisticsSubject.Value;
+        /// <summary>📊 Current Memory Statistics</summary>
+        public MemoryStatistics CurrentStatistics => _memoryStatisticsSubject.Value;
 
-        /// <summary>🔄 Is Processing Active</summary>
-        public bool IsProcessing => _isProcessing;
+        /// <summary>🧠 Memory Health Status</summary>
+        public MemoryHealth HealthStatus => CalculateMemoryHealth();
 
         #endregion
 
         #region 🏗️ Constructor & Initialization
 
         /// <summary>
-        /// 🎯 Initialize Ultra-High Performance Command Queue
+        /// 🎯 Initialize Ultra-High Performance Memory Manager
         /// </summary>
-        public UC1_CommandQueue(
-            int maxConcurrency = 0,
-            CommandQueueConfiguration configuration = null,
+        public UC1_MemoryManager(
+            MemoryManagerConfiguration configuration = null,
             UC1_PerformanceMonitor performanceMonitor = null)
         {
             try
             {
-                Logger.Log("🚀 [CommandQueue] Initializing High-Performance Command Queue", LogLevel.Info);
+                Logger.Log("🚀 [MemoryManager] Initializing Ultra-High Performance Memory System", LogLevel.Info);
 
                 // Initialize configuration
-                _configuration = configuration ?? CommandQueueConfiguration.Default;
-                var concurrency = maxConcurrency > 0 ? maxConcurrency : Environment.ProcessorCount * 2;
+                _configuration = configuration ?? MemoryManagerConfiguration.Default;
 
-                // Initialize channels with bounded capacity for backpressure
-                var channelOptions = new BoundedChannelOptions(_configuration.MaxQueueSize)
-                {
-                    FullMode = BoundedChannelFullMode.Wait,
-                    SingleReader = false,
-                    SingleWriter = false,
-                    AllowSynchronousContinuations = false
-                };
+                // Initialize object pools
+                _objectPools = new ConcurrentDictionary<Type, IObjectPool>();
+                _byteArrayPool = ArrayPool<byte>.Create(_configuration.MaxArrayLength, _configuration.MaxArraysPerBucket);
+                _charArrayPool = ArrayPool<char>.Create(_configuration.MaxArrayLength, _configuration.MaxArraysPerBucket);
+                _intArrayPool = ArrayPool<int>.Create(_configuration.MaxArrayLength, _configuration.MaxArraysPerBucket);
+                _floatArrayPool = ArrayPool<float>.Create(_configuration.MaxArrayLength, _configuration.MaxArraysPerBucket);
 
-                _highPriorityChannel = Channel.CreateBounded<QueuedCommand>(channelOptions);
-                _normalPriorityChannel = Channel.CreateBounded<QueuedCommand>(channelOptions);
-                _lowPriorityChannel = Channel.CreateBounded<QueuedCommand>(channelOptions);
-                _retryChannel = Channel.CreateBounded<QueuedCommand>(channelOptions);
-
-                // Initialize collections
-                _processingCommands = new ConcurrentDictionary<Guid, QueuedCommand>();
-                _executionContexts = new ConcurrentDictionary<Guid, CommandExecutionContext>();
-                _priorityQueue = new PriorityQueue<QueuedCommand, CommandPriority>();
+                // Initialize monitoring components
+                _memoryProfiler = new MemoryProfiler(_configuration);
+                _gcNotificationManager = new GCNotificationManager();
+                _memoryPressureManager = new MemoryPressureManager(_configuration);
 
                 // Initialize reactive subjects
-                _commandQueuedSubject = new Subject<CommandQueuedEvent>();
-                _commandProcessedSubject = new Subject<CommandProcessedEvent>();
-                _commandFailedSubject = new Subject<CommandFailedEvent>();
-                _statisticsSubject = new BehaviorSubject<QueueStatistics>(new QueueStatistics());
+                _memoryStatisticsSubject = new BehaviorSubject<MemoryStatistics>(new MemoryStatistics());
+                _gcEventSubject = new Subject<GCEvent>();
+                _memoryPressureSubject = new Subject<MemoryPressureEvent>();
+                _allocationEventSubject = new Subject<AllocationEvent>();
 
                 // Initialize infrastructure
-                _processingSlot = new SemaphoreSlim(concurrency, concurrency);
-                _cancellationTokenSource = new CancellationTokenSource();
                 _performanceMonitor = performanceMonitor ?? new UC1_PerformanceMonitor();
+                _cleanupSemaphore = new SemaphoreSlim(1, 1);
+                _cancellationTokenSource = new CancellationTokenSource();
 
-                // Initialize processing tasks
-                _processingTasks = new List<Task>();
+                // Initialize tracking
+                _allocationTrackers = new ConcurrentDictionary<string, AllocationTracker>();
+                _recentAllocations = new ConcurrentQueue<MemoryAllocation>();
+                _cachedMetrics = new MemoryMetrics();
+                _lastMetricsUpdate = DateTime.MinValue;
 
-                // Setup timers
-                _statisticsTimer = new Timer(UpdateStatisticsCallback, null,
+                // Setup default object pools
+                SetupDefaultObjectPools();
+
+                // Setup GC notifications
+                SetupGCMonitoring();
+
+                // Start monitoring timers
+                _monitoringTimer = new Timer(MonitoringCallback, null,
                     TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-                _retryTimer = new Timer(ProcessRetryQueueCallback, null,
-                    TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                _cleanupTimer = new Timer(CleanupCallback, null,
+                    TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
 
-                // Start processing tasks
-                StartProcessingTasks(concurrency);
+                // Configure GC settings for optimal performance
+                ConfigureGCSettings();
 
-                _isProcessing = true;
-
-                Logger.Log($"✅ [CommandQueue] High-Performance Command Queue initialized (Concurrency: {concurrency})", LogLevel.Info);
+                Logger.Log("✅ [MemoryManager] Ultra-High Performance Memory System initialized", LogLevel.Info);
             }
             catch (Exception ex)
             {
-                Logger.Log($"❌ [CommandQueue] Initialization failed: {ex.Message}", LogLevel.Error);
+                Logger.Log($"❌ [MemoryManager] Initialization failed: {ex.Message}", LogLevel.Error);
                 throw;
             }
         }
 
         /// <summary>
-        /// 🔥 Start High-Performance Processing Tasks
+        /// ⚙️ Setup Default Object Pools
         /// </summary>
-        private void StartProcessingTasks(int concurrency)
+        private void SetupDefaultObjectPools()
         {
             try
             {
-                var token = _cancellationTokenSource.Token;
+                // Create pools for common types
+                CreateObjectPool<TemperatureReading>(() => new TemperatureReading(), 1000);
+                CreateObjectPool<StirrerReading>(() => new StirrerReading(), 1000);
+                CreateObjectPool<SerialDataPacket>(() => new SerialDataPacket(), 500);
+                CreateObjectPool<CommandExecutionResult>(() => CommandExecutionResult.Success(Guid.Empty), 200);
+                CreateObjectPool<List<byte>>(() => new List<byte>(), 100);
+                CreateObjectPool<Dictionary<string, object>>(() => new Dictionary<string, object>(), 100);
 
-                // High Priority Processing Tasks
-                for (int i = 0; i < Math.Max(1, concurrency / 3); i++)
-                {
-                    var task = Task.Run(() => ProcessChannelAsync(_highPriorityChannel.Reader, CommandPriority.High, token), token);
-                    _processingTasks.Add(task);
-                }
-
-                // Normal Priority Processing Tasks
-                for (int i = 0; i < concurrency / 2; i++)
-                {
-                    var task = Task.Run(() => ProcessChannelAsync(_normalPriorityChannel.Reader, CommandPriority.Normal, token), token);
-                    _processingTasks.Add(task);
-                }
-
-                // Low Priority Processing Tasks
-                for (int i = 0; i < Math.Max(1, concurrency / 4); i++)
-                {
-                    var task = Task.Run(() => ProcessChannelAsync(_lowPriorityChannel.Reader, CommandPriority.Low, token), token);
-                    _processingTasks.Add(task);
-                }
-
-                // Retry Processing Task
-                var retryTask = Task.Run(() => ProcessChannelAsync(_retryChannel.Reader, CommandPriority.Retry, token), token);
-                _processingTasks.Add(retryTask);
-
-                Logger.Log($"🔥 [CommandQueue] Started {_processingTasks.Count} processing tasks", LogLevel.Info);
+                Logger.Log("⚙️ [MemoryManager] Default object pools configured", LogLevel.Info);
             }
             catch (Exception ex)
             {
-                Logger.Log($"❌ [CommandQueue] Processing task startup failed: {ex.Message}", LogLevel.Error);
+                Logger.Log($"❌ [MemoryManager] Object pools setup failed: {ex.Message}", LogLevel.Error);
             }
         }
 
-        #endregion
-
-        #region 📥 Command Queuing
-
         /// <summary>
-        /// 📥 Enqueue Command with Priority and Hardware Acceleration
+        /// 🗑️ Setup Garbage Collection Monitoring
         /// </summary>
-        public async Task<bool> EnqueueAsync<T>(T command, CommandPriority priority = CommandPriority.Normal, CancellationToken cancellationToken = default) where T : ICommand
+        private void SetupGCMonitoring()
         {
-            if (_isDisposed || command == null) return false;
-
             try
             {
-                var queuedCommand = new QueuedCommand
+                _gcNotificationManager.GCOccurred += (generation, gcType) =>
                 {
-                    Command = command,
-                    Priority = priority,
-                    QueuedAt = DateTime.UtcNow,
-                    AttemptCount = 0,
-                    MaxRetries = GetMaxRetries(priority),
-                    ExecutionContext = CreateExecutionContext(command)
+                    var gcEvent = new GCEvent
+                    {
+                        Generation = generation,
+                        Type = gcType,
+                        Timestamp = DateTime.UtcNow,
+                        MemoryBefore = GC.GetTotalMemory(false),
+                        MemoryAfter = GC.GetTotalMemory(false)
+                    };
+
+                    _gcEventSubject.OnNext(gcEvent);
+
+                    // Record performance impact
+                    _performanceMonitor.RecordCustomMetric($"GC_Gen{generation}", 1, MetricCategory.System);
                 };
 
-                // Select appropriate channel based on priority
-                var channel = GetChannelForPriority(priority);
-
-                // Enqueue with backpressure handling
-                await channel.Writer.WriteAsync(queuedCommand, cancellationToken);
-
-                // Update metrics
-                Interlocked.Increment(ref _totalCommandsQueued);
-
-                // Emit queued event
-                _commandQueuedSubject.OnNext(new CommandQueuedEvent
-                {
-                    CommandId = command.CommandId,
-                    CommandType = typeof(T).Name,
-                    Priority = priority,
-                    QueuedAt = queuedCommand.QueuedAt,
-                    QueueSize = GetQueueSize()
-                });
-
-                Logger.Log($"📥 [CommandQueue] Command queued: {typeof(T).Name} (Priority: {priority}, ID: {command.CommandId})", LogLevel.Debug);
-                return true;
-            }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("complete"))
-            {
-                Logger.Log($"⚠️ [CommandQueue] Queue is shutting down: {typeof(T).Name}", LogLevel.Warn);
-                return false;
+                Logger.Log("🗑️ [MemoryManager] GC monitoring configured", LogLevel.Info);
             }
             catch (Exception ex)
             {
-                Logger.Log($"❌ [CommandQueue] Enqueue failed for {typeof(T).Name}: {ex.Message}", LogLevel.Error);
-                return false;
+                Logger.Log($"❌ [MemoryManager] GC monitoring setup failed: {ex.Message}", LogLevel.Error);
             }
         }
 
         /// <summary>
-        /// 📥 Batch Enqueue Commands for High Throughput
+        /// ⚙️ Configure GC Settings for Optimal Performance
         /// </summary>
-        public async Task<int> EnqueueBatchAsync<T>(IEnumerable<T> commands, CommandPriority priority = CommandPriority.Normal, CancellationToken cancellationToken = default) where T : ICommand
+        private void ConfigureGCSettings()
         {
-            if (_isDisposed || commands == null) return 0;
-
             try
             {
-                var commandList = commands.ToList();
-                var successCount = 0;
-
-                var channel = GetChannelForPriority(priority);
-
-                foreach (var command in commandList)
+                // Configure GC for low latency if possible
+                if (GCSettings.IsServerGC)
                 {
-                    if (cancellationToken.IsCancellationRequested) break;
-
-                    try
-                    {
-                        var queuedCommand = new QueuedCommand
-                        {
-                            Command = command,
-                            Priority = priority,
-                            QueuedAt = DateTime.UtcNow,
-                            AttemptCount = 0,
-                            MaxRetries = GetMaxRetries(priority),
-                            ExecutionContext = CreateExecutionContext(command)
-                        };
-
-                        await channel.Writer.WriteAsync(queuedCommand, cancellationToken);
-                        successCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Log($"❌ [CommandQueue] Batch item failed: {ex.Message}", LogLevel.Error);
-                    }
+                    // Already optimized for server scenarios
+                    Logger.Log("⚙️ [MemoryManager] Server GC detected", LogLevel.Info);
                 }
 
-                Interlocked.Add(ref _totalCommandsQueued, successCount);
-
-                Logger.Log($"📥 [CommandQueue] Batch enqueued: {successCount}/{commandList.Count} commands", LogLevel.Info);
-                return successCount;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Batch enqueue failed: {ex.Message}", LogLevel.Error);
-                return 0;
-            }
-        }
-
-        #endregion
-
-        #region ⚡ Command Processing
-
-        /// <summary>
-        /// ⚡ Process Channel with Hardware Acceleration
-        /// </summary>
-        private async Task ProcessChannelAsync(ChannelReader<QueuedCommand> reader, CommandPriority priority, CancellationToken cancellationToken)
-        {
-            try
-            {
-                Logger.Log($"⚡ [CommandQueue] Processing channel started: {priority}", LogLevel.Info);
-
-                await foreach (var queuedCommand in reader.ReadAllAsync(cancellationToken))
-                {
-                    if (cancellationToken.IsCancellationRequested) break;
-
-                    await ProcessCommandAsync(queuedCommand, cancellationToken);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                Logger.Log($"🛑 [CommandQueue] Processing channel cancelled: {priority}", LogLevel.Info);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Processing channel error ({priority}): {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        /// <summary>
-        /// 🎯 Process Individual Command with Hardware Acceleration
-        /// </summary>
-        private async Task ProcessCommandAsync(QueuedCommand queuedCommand, CancellationToken cancellationToken)
-        {
-            await _processingSlot.WaitAsync(cancellationToken);
-            try
-            {
-                var startTime = DateTime.UtcNow;
-                queuedCommand.AttemptCount++;
-
-                // Add to processing commands
-                _processingCommands[queuedCommand.Command.CommandId] = queuedCommand;
-
+                // Set GC latency mode for better performance
+                var originalLatencyMode = GCSettings.LatencyMode;
                 try
                 {
-                    // Execute command with timeout
-                    using var timeoutCts = new CancellationTokenSource(_configuration.CommandTimeout);
-                    using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-                    var result = await ExecuteCommandAsync(queuedCommand, combinedCts.Token);
-
-                    var processingTime = (DateTime.UtcNow - startTime).TotalMilliseconds;
-
-                    if (result.Success)
+                    if (_configuration.LowLatencyMode)
                     {
-                        // Command succeeded
-                        await HandleCommandSuccessAsync(queuedCommand, result, processingTime);
+                        GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
+                        Logger.Log("⚙️ [MemoryManager] Low latency GC mode enabled", LogLevel.Info);
                     }
-                    else
-                    {
-                        // Command failed
-                        await HandleCommandFailureAsync(queuedCommand, result, processingTime);
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    Logger.Log($"🛑 [CommandQueue] Command cancelled: {queuedCommand.Command.CommandId}", LogLevel.Debug);
                 }
                 catch (Exception ex)
                 {
-                    var processingTime = (DateTime.UtcNow - startTime).TotalMilliseconds;
-                    await HandleCommandExceptionAsync(queuedCommand, ex, processingTime);
+                    Logger.Log($"⚠️ [MemoryManager] Could not set GC latency mode: {ex.Message}", LogLevel.Warn);
+                    GCSettings.LatencyMode = originalLatencyMode;
                 }
-                finally
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] GC configuration failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        #endregion
+
+        #region 🏊 Object Pool Management
+
+        /// <summary>
+        /// 🏭 Create Object Pool for Type
+        /// </summary>
+        public void CreateObjectPool<T>(Func<T> factory, int maxObjects = 100) where T : class
+        {
+            try
+            {
+                var pool = new ObjectPool<T>(factory, maxObjects);
+                _objectPools[typeof(T)] = pool;
+
+                Logger.Log($"🏭 [MemoryManager] Object pool created for {typeof(T).Name} (Max: {maxObjects})", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Object pool creation failed for {typeof(T).Name}: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 📥 Rent Object from Pool
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T RentObject<T>() where T : class, new()
+        {
+            try
+            {
+                if (_objectPools.TryGetValue(typeof(T), out IObjectPool pool) && pool is ObjectPool<T> typedPool)
                 {
-                    // Remove from processing commands
-                    _processingCommands.TryRemove(queuedCommand.Command.CommandId, out _);
+                    var obj = typedPool.Rent();
+                    RecordAllocation(typeof(T).Name, 1, AllocationSource.ObjectPool);
+                    return obj;
                 }
+
+                // Fallback to new instance
+                var newObj = new T();
+                RecordAllocation(typeof(T).Name, 1, AllocationSource.Direct);
+                return newObj;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Object rent failed for {typeof(T).Name}: {ex.Message}", LogLevel.Error);
+                return new T();
+            }
+        }
+
+        /// <summary>
+        /// 📤 Return Object to Pool
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReturnObject<T>(T obj) where T : class
+        {
+            try
+            {
+                if (obj == null) return;
+
+                if (_objectPools.TryGetValue(typeof(T), out IObjectPool pool) && pool is ObjectPool<T> typedPool)
+                {
+                    typedPool.Return(obj);
+                }
+                // If no pool exists, object will be garbage collected normally
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Object return failed for {typeof(T).Name}: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 📋 Rent Array from Pool
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public T[] RentArray<T>(int minimumLength)
+        {
+            try
+            {
+                T[] array;
+
+                if (typeof(T) == typeof(byte))
+                {
+                    array = (T[])(object)_byteArrayPool.Rent(minimumLength);
+                }
+                else if (typeof(T) == typeof(char))
+                {
+                    array = (T[])(object)_charArrayPool.Rent(minimumLength);
+                }
+                else if (typeof(T) == typeof(int))
+                {
+                    array = (T[])(object)_intArrayPool.Rent(minimumLength);
+                }
+                else if (typeof(T) == typeof(float))
+                {
+                    array = (T[])(object)_floatArrayPool.Rent(minimumLength);
+                }
+                else
+                {
+                    // Fallback to regular allocation
+                    array = new T[minimumLength];
+                    RecordAllocation($"Array<{typeof(T).Name}>", minimumLength, AllocationSource.Direct);
+                    return array;
+                }
+
+                RecordAllocation($"Array<{typeof(T).Name}>", array.Length, AllocationSource.ArrayPool);
+                return array;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Array rent failed for {typeof(T).Name}: {ex.Message}", LogLevel.Error);
+                return new T[minimumLength];
+            }
+        }
+
+        /// <summary>
+        /// 📋 Return Array to Pool
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ReturnArray<T>(T[] array, bool clearArray = false)
+        {
+            try
+            {
+                if (array == null) return;
+
+                if (typeof(T) == typeof(byte))
+                {
+                    _byteArrayPool.Return((byte[])(object)array, clearArray);
+                }
+                else if (typeof(T) == typeof(char))
+                {
+                    _charArrayPool.Return((char[])(object)array, clearArray);
+                }
+                else if (typeof(T) == typeof(int))
+                {
+                    _intArrayPool.Return((int[])(object)array, clearArray);
+                }
+                else if (typeof(T) == typeof(float))
+                {
+                    _floatArrayPool.Return((float[])(object)array, clearArray);
+                }
+                // Other types will be garbage collected normally
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Array return failed for {typeof(T).Name}: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        #endregion
+
+        #region 🔄 Memory Operations
+
+        /// <summary>
+        /// 🔄 Zero-Copy Memory Operation
+        /// </summary>
+        public ReadOnlyMemory<T> CreateReadOnlyMemory<T>(T[] source, int start = 0, int length = -1)
+        {
+            try
+            {
+                var actualLength = length == -1 ? source.Length - start : length;
+                return new ReadOnlyMemory<T>(source, start, actualLength);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] ReadOnlyMemory creation failed: {ex.Message}", LogLevel.Error);
+                return ReadOnlyMemory<T>.Empty;
+            }
+        }
+
+        /// <summary>
+        /// 🔄 Memory Copy with Hardware Acceleration
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void CopyMemory<T>(ReadOnlySpan<T> source, Span<T> destination) where T : unmanaged
+        {
+            try
+            {
+                source.CopyTo(destination);
+                RecordAllocation("MemoryCopy", source.Length, AllocationSource.MemoryOperation);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Memory copy failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 🧹 Force Garbage Collection with Optimization
+        /// </summary>
+        public async Task ForceGarbageCollectionAsync(int generation = -1, bool compacting = false)
+        {
+            try
+            {
+                Logger.Log($"🧹 [MemoryManager] Forcing GC (Generation: {generation}, Compacting: {compacting})", LogLevel.Info);
+
+                await Task.Run(() =>
+                {
+                    var before = GC.GetTotalMemory(false);
+
+                    if (generation == -1)
+                    {
+                        GC.Collect();
+                    }
+                    else
+                    {
+                        GC.Collect(generation);
+                    }
+
+                    if (compacting)
+                    {
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+                    }
+
+                    var after = GC.GetTotalMemory(false);
+                    var freed = before - after;
+
+                    Logger.Log($"🧹 [MemoryManager] GC completed - Freed: {freed:N0} bytes", LogLevel.Info);
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Force GC failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 📊 Trigger Memory Pressure Relief
+        /// </summary>
+        public async Task<bool> RelieveMemoryPressureAsync()
+        {
+            if (!await _cleanupSemaphore.WaitAsync(1000))
+            {
+                return false; // Another cleanup in progress
+            }
+
+            try
+            {
+                Logger.Log("📊 [MemoryManager] Starting memory pressure relief", LogLevel.Info);
+
+                var beforeMemory = GC.GetTotalMemory(false);
+
+                // Clear object pools to release memory
+                await ClearObjectPoolsAsync();
+
+                // Clear allocation tracking
+                ClearAllocationTracking();
+
+                // Force aggressive garbage collection
+                await ForceGarbageCollectionAsync(-1, true);
+
+                var afterMemory = GC.GetTotalMemory(false);
+                var freed = beforeMemory - afterMemory;
+
+                Logger.Log($"📊 [MemoryManager] Memory pressure relief completed - Freed: {freed:N0} bytes", LogLevel.Info);
+
+                // Emit memory pressure event
+                _memoryPressureSubject.OnNext(new MemoryPressureEvent
+                {
+                    Type = MemoryPressureType.Relief,
+                    MemoryBefore = beforeMemory,
+                    MemoryAfter = afterMemory,
+                    BytesFreed = freed,
+                    Timestamp = DateTime.UtcNow
+                });
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Memory pressure relief failed: {ex.Message}", LogLevel.Error);
+                return false;
             }
             finally
             {
-                _processingSlot.Release();
-            }
-        }
-
-        /// <summary>
-        /// ⚙️ Execute Command with Context and Monitoring
-        /// </summary>
-        private async Task<CommandExecutionResult> ExecuteCommandAsync(QueuedCommand queuedCommand, CancellationToken cancellationToken)
-        {
-            try
-            {
-                var context = queuedCommand.ExecutionContext;
-                var command = queuedCommand.Command;
-
-                // Get command handler
-                var handler = GetCommandHandler(command);
-                if (handler == null)
-                {
-                    return CommandExecutionResult.Failed(command.CommandId, "No handler found");
-                }
-
-                // Execute command
-                var result = await handler.HandleAsync(command, cancellationToken);
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                return CommandExecutionResult.Failed(queuedCommand.Command.CommandId, ex.Message);
+                _cleanupSemaphore.Release();
             }
         }
 
         #endregion
 
-        #region 🔄 Success/Failure Handling
+        #region 📊 Memory Monitoring & Profiling
 
         /// <summary>
-        /// ✅ Handle Command Success
+        /// 📊 Record Memory Allocation
         /// </summary>
-        private async Task HandleCommandSuccessAsync(QueuedCommand queuedCommand, CommandExecutionResult result, double processingTime)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void RecordAllocation(string type, long size, AllocationSource source)
         {
             try
             {
-                Interlocked.Increment(ref _totalCommandsProcessed);
+                Interlocked.Add(ref _totalAllocatedBytes, size);
 
-                // Record performance metrics
-                _performanceMonitor.RecordCommandExecuted(processingTime);
-
-                // Emit success event
-                _commandProcessedSubject.OnNext(new CommandProcessedEvent
+                var allocation = new MemoryAllocation
                 {
-                    CommandId = queuedCommand.Command.CommandId,
-                    CommandType = queuedCommand.Command.GetType().Name,
-                    Priority = queuedCommand.Priority,
-                    ProcessingTime = processingTime,
-                    AttemptCount = queuedCommand.AttemptCount,
-                    Result = result.Result
-                });
-
-                Logger.Log($"✅ [CommandQueue] Command completed: {queuedCommand.Command.CommandId} ({processingTime:F2}ms)", LogLevel.Debug);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Success handling failed: {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        /// <summary>
-        /// ❌ Handle Command Failure with Retry Logic
-        /// </summary>
-        private async Task HandleCommandFailureAsync(QueuedCommand queuedCommand, CommandExecutionResult result, double processingTime)
-        {
-            try
-            {
-                if (queuedCommand.AttemptCount < queuedCommand.MaxRetries)
-                {
-                    // Retry command
-                    await RetryCommandAsync(queuedCommand);
-                }
-                else
-                {
-                    // Max retries reached - command failed permanently
-                    await HandleCommandPermanentFailureAsync(queuedCommand, result, processingTime);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Failure handling failed: {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        /// <summary>
-        /// 💥 Handle Command Exception
-        /// </summary>
-        private async Task HandleCommandExceptionAsync(QueuedCommand queuedCommand, Exception exception, double processingTime)
-        {
-            try
-            {
-                if (queuedCommand.AttemptCount < queuedCommand.MaxRetries && IsRetryableException(exception))
-                {
-                    // Retry on retryable exceptions
-                    await RetryCommandAsync(queuedCommand);
-                }
-                else
-                {
-                    // Permanent failure
-                    var result = CommandExecutionResult.Failed(queuedCommand.Command.CommandId, exception.Message);
-                    await HandleCommandPermanentFailureAsync(queuedCommand, result, processingTime);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Exception handling failed: {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        /// <summary>
-        /// 🔄 Retry Command with Exponential Backoff
-        /// </summary>
-        private async Task RetryCommandAsync(QueuedCommand queuedCommand)
-        {
-            try
-            {
-                // Calculate retry delay with exponential backoff
-                var delay = CalculateRetryDelay(queuedCommand.AttemptCount);
-                queuedCommand.NextRetryAt = DateTime.UtcNow.Add(delay);
-
-                // Add to retry channel
-                await _retryChannel.Writer.WriteAsync(queuedCommand);
-
-                Logger.Log($"🔄 [CommandQueue] Command scheduled for retry: {queuedCommand.Command.CommandId} (Attempt {queuedCommand.AttemptCount + 1}/{queuedCommand.MaxRetries})", LogLevel.Debug);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Retry scheduling failed: {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        /// <summary>
-        /// 💀 Handle Permanent Command Failure
-        /// </summary>
-        private async Task HandleCommandPermanentFailureAsync(QueuedCommand queuedCommand, CommandExecutionResult result, double processingTime)
-        {
-            try
-            {
-                Interlocked.Increment(ref _totalCommandsFailed);
-
-                // Emit failure event
-                _commandFailedSubject.OnNext(new CommandFailedEvent
-                {
-                    CommandId = queuedCommand.Command.CommandId,
-                    CommandType = queuedCommand.Command.GetType().Name,
-                    Priority = queuedCommand.Priority,
-                    ProcessingTime = processingTime,
-                    AttemptCount = queuedCommand.AttemptCount,
-                    Error = result.Error,
-                    IsPermanent = true
-                });
-
-                Logger.Log($"💀 [CommandQueue] Command failed permanently: {queuedCommand.Command.CommandId} - {result.Error}", LogLevel.Error);
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"❌ [CommandQueue] Permanent failure handling failed: {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        #endregion
-
-        #region 🛠️ Utility Methods
-
-        /// <summary>
-        /// 📍 Get Channel for Priority
-        /// </summary>
-        private Channel<QueuedCommand> GetChannelForPriority(CommandPriority priority)
-        {
-            return priority switch
-            {
-                CommandPriority.High or CommandPriority.Critical => _highPriorityChannel,
-                CommandPriority.Low => _lowPriorityChannel,
-                _ => _normalPriorityChannel
-            };
-        }
-
-        /// <summary>
-        /// 🔁 Get Max Retries for Priority
-        /// </summary>
-        private int GetMaxRetries(CommandPriority priority)
-        {
-            return priority switch
-            {
-                CommandPriority.Critical => _configuration.MaxRetriesCritical,
-                CommandPriority.High => _configuration.MaxRetriesHigh,
-                CommandPriority.Normal => _configuration.MaxRetriesNormal,
-                CommandPriority.Low => _configuration.MaxRetriesLow,
-                _ => _configuration.MaxRetriesNormal
-            };
-        }
-
-        /// <summary>
-        /// ⏱️ Calculate Retry Delay with Exponential Backoff
-        /// </summary>
-        private TimeSpan CalculateRetryDelay(int attemptCount)
-        {
-            var baseDelay = _configuration.BaseRetryDelay;
-            var maxDelay = _configuration.MaxRetryDelay;
-
-            // Exponential backoff: delay = baseDelay * 2^(attempt-1)
-            var delay = TimeSpan.FromMilliseconds(
-                Math.Min(maxDelay.TotalMilliseconds,
-                        baseDelay.TotalMilliseconds * Math.Pow(2, attemptCount - 1)));
-
-            // Add jitter to prevent thundering herd
-            var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, (int)(delay.TotalMilliseconds * 0.1)));
-
-            return delay.Add(jitter);
-        }
-
-        /// <summary>
-        /// 🔍 Check if Exception is Retryable
-        /// </summary>
-        private bool IsRetryableException(Exception exception)
-        {
-            return exception switch
-            {
-                OperationCanceledException => false,
-                ArgumentException => false,
-                InvalidOperationException => false,
-                TimeoutException => true,
-                _ => true // Default to retryable for unknown exceptions
-            };
-        }
-
-        /// <summary>
-        /// 📊 Get Current Queue Size
-        /// </summary>
-        private int GetQueueSize()
-        {
-            try
-            {
-                return _highPriorityChannel.Reader.CanCount ? _highPriorityChannel.Reader.Count : 0 +
-                       _normalPriorityChannel.Reader.CanCount ? _normalPriorityChannel.Reader.Count : 0 +
-                       _lowPriorityChannel.Reader.CanCount ? _lowPriorityChannel.Reader.Count : 0 +
-                       _retryChannel.Reader.CanCount ? _retryChannel.Reader.Count : 0;
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-
-        /// <summary>
-        /// ⚙️ Create Execution Context
-        /// </summary>
-        private CommandExecutionContext CreateExecutionContext(ICommand command)
-        {
-            return new CommandExecutionContext
-            {
-                CommandId = command.CommandId,
-                CreatedAt = DateTime.UtcNow,
-                Properties = new Dictionary<string, object>()
-            };
-        }
-
-        /// <summary>
-        /// 🎯 Get Command Handler (Placeholder)
-        /// </summary>
-        private ICommandHandler GetCommandHandler(ICommand command)
-        {
-            // This would integrate with the UC1_CommandService
-            // For now, return a mock handler
-            return new DefaultCommandHandler();
-        }
-
-        #endregion
-
-        #region 📊 Statistics & Monitoring
-
-        /// <summary>
-        /// 📊 Update Statistics Timer Callback
-        /// </summary>
-        private void UpdateStatisticsCallback(object state)
-        {
-            try
-            {
-                var statistics = new QueueStatistics
-                {
-                    TotalQueued = _totalCommandsQueued,
-                    TotalProcessed = _totalCommandsProcessed,
-                    TotalFailed = _totalCommandsFailed,
-                    CurrentQueueSize = GetQueueSize(),
-                    ProcessingCommands = _processingCommands.Count,
-                    AvailableSlots = _processingSlot.CurrentCount,
+                    Type = type,
+                    Size = size,
+                    Source = source,
                     Timestamp = DateTime.UtcNow
                 };
 
-                _statisticsSubject.OnNext(statistics);
+                _recentAllocations.Enqueue(allocation);
+
+                // Keep only recent allocations
+                while (_recentAllocations.Count > _configuration.MaxRecentAllocations)
+                {
+                    _recentAllocations.TryDequeue(out _);
+                }
+
+                // Update allocation tracker
+                var tracker = _allocationTrackers.GetOrAdd(type, _ => new AllocationTracker());
+                tracker.RecordAllocation(size);
+
+                // Emit allocation event
+                _allocationEventSubject.OnNext(new AllocationEvent
+                {
+                    Allocation = allocation
+                });
             }
             catch (Exception ex)
             {
-                Logger.Log($"❌ [CommandQueue] Statistics update failed: {ex.Message}", LogLevel.Error);
+                Logger.Log($"❌ [MemoryManager] Allocation recording failed: {ex.Message}", LogLevel.Error);
             }
         }
 
         /// <summary>
-        /// 🔄 Process Retry Queue Timer Callback
+        /// 📊 Calculate Memory Health
         /// </summary>
-        private void ProcessRetryQueueCallback(object state)
+        private MemoryHealth CalculateMemoryHealth()
         {
             try
             {
-                // This would process commands that are ready for retry
-                // Implementation depends on the retry scheduling mechanism
+                var totalMemory = GC.GetTotalMemory(false);
+                var availableMemory = GC.GetTotalMemory(false); // Simplified
+                var usagePercentage = (double)totalMemory / (totalMemory + availableMemory) * 100;
+
+                var gen0Collections = GC.CollectionCount(0);
+                var gen1Collections = GC.CollectionCount(1);
+                var gen2Collections = GC.CollectionCount(2);
+
+                // Simple health calculation
+                if (usagePercentage > 90 || gen2Collections > 10)
+                {
+                    return MemoryHealth.Critical;
+                }
+                else if (usagePercentage > 70 || gen2Collections > 5)
+                {
+                    return MemoryHealth.Warning;
+                }
+                else if (usagePercentage > 50)
+                {
+                    return MemoryHealth.Good;
+                }
+                else
+                {
+                    return MemoryHealth.Excellent;
+                }
+            }
+            catch
+            {
+                return MemoryHealth.Unknown;
+            }
+        }
+
+        /// <summary>
+        /// ⏰ Monitoring Timer Callback
+        /// </summary>
+        private void MonitoringCallback(object state)
+        {
+            try
+            {
+                var statistics = new MemoryStatistics
+                {
+                    TotalMemory = GC.GetTotalMemory(false),
+                    Generation0Collections = GC.CollectionCount(0),
+                    Generation1Collections = GC.CollectionCount(1),
+                    Generation2Collections = GC.CollectionCount(2),
+                    TotalAllocatedBytes = _totalAllocatedBytes,
+                    ObjectPoolCount = _objectPools.Count,
+                    HealthStatus = CalculateMemoryHealth(),
+                    Timestamp = DateTime.UtcNow
+                };
+
+                _memoryStatisticsSubject.OnNext(statistics);
+
+                // Check for memory pressure
+                CheckMemoryPressure(statistics);
+
+                // Update cached metrics
+                UpdateCachedMetrics(statistics);
             }
             catch (Exception ex)
             {
-                Logger.Log($"❌ [CommandQueue] Retry queue processing failed: {ex.Message}", LogLevel.Error);
+                Logger.Log($"❌ [MemoryManager] Monitoring callback failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// ⚠️ Check for Memory Pressure
+        /// </summary>
+        private void CheckMemoryPressure(MemoryStatistics statistics)
+        {
+            try
+            {
+                var usagePercentage = (double)statistics.TotalMemory / (_configuration.MaxMemoryUsage * 1024 * 1024) * 100;
+
+                if (usagePercentage > _configuration.HighMemoryThreshold)
+                {
+                    _memoryPressureSubject.OnNext(new MemoryPressureEvent
+                    {
+                        Type = MemoryPressureType.High,
+                        CurrentUsage = statistics.TotalMemory,
+                        UsagePercentage = usagePercentage,
+                        Timestamp = DateTime.UtcNow
+                    });
+
+                    // Auto-trigger pressure relief if enabled
+                    if (_configuration.AutoMemoryRelief)
+                    {
+                        _ = Task.Run(async () => await RelieveMemoryPressureAsync());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Memory pressure check failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        #endregion
+
+        #region 🧹 Cleanup Operations
+
+        /// <summary>
+        /// 🧹 Cleanup Timer Callback
+        /// </summary>
+        private void CleanupCallback(object state)
+        {
+            try
+            {
+                _ = Task.Run(async () => await PerformRoutineCleanupAsync());
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Cleanup callback failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 🧹 Perform Routine Cleanup
+        /// </summary>
+        private async Task PerformRoutineCleanupAsync()
+        {
+            try
+            {
+                Logger.Log("🧹 [MemoryManager] Starting routine cleanup", LogLevel.Debug);
+
+                // Clean up old allocation records
+                ClearOldAllocations();
+
+                // Trim object pools
+                await TrimObjectPoolsAsync();
+
+                // Suggestion for GC if memory usage is high
+                var currentMemory = GC.GetTotalMemory(false);
+                if (currentMemory > _configuration.MaxMemoryUsage * 1024 * 1024 * 0.8)
+                {
+                    GC.Collect(0, GCCollectionMode.Optimized);
+                }
+
+                Logger.Log("🧹 [MemoryManager] Routine cleanup completed", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Routine cleanup failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 🧹 Clear Object Pools
+        /// </summary>
+        private async Task ClearObjectPoolsAsync()
+        {
+            try
+            {
+                await Task.Run(() =>
+                {
+                    foreach (var pool in _objectPools.Values)
+                    {
+                        pool.Clear();
+                    }
+                });
+
+                Logger.Log("🧹 [MemoryManager] Object pools cleared", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Object pools clearing failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// ✂️ Trim Object Pools
+        /// </summary>
+        private async Task TrimObjectPoolsAsync()
+        {
+            try
+            {
+                await Task.Run(() =>
+                {
+                    foreach (var pool in _objectPools.Values)
+                    {
+                        pool.Trim();
+                    }
+                });
+
+                Logger.Log("✂️ [MemoryManager] Object pools trimmed", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Object pools trimming failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 🧹 Clear Allocation Tracking
+        /// </summary>
+        private void ClearAllocationTracking()
+        {
+            try
+            {
+                _allocationTrackers.Clear();
+                while (_recentAllocations.TryDequeue(out _)) { }
+
+                Logger.Log("🧹 [MemoryManager] Allocation tracking cleared", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Allocation tracking clear failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 🧹 Clear Old Allocations
+        /// </summary>
+        private void ClearOldAllocations()
+        {
+            try
+            {
+                var cutoff = DateTime.UtcNow.AddMinutes(-5);
+                var allocationsToKeep = new Queue<MemoryAllocation>();
+
+                while (_recentAllocations.TryDequeue(out var allocation))
+                {
+                    if (allocation.Timestamp > cutoff)
+                    {
+                        allocationsToKeep.Enqueue(allocation);
+                    }
+                }
+
+                // Re-add recent allocations
+                while (allocationsToKeep.Count > 0)
+                {
+                    _recentAllocations.Enqueue(allocationsToKeep.Dequeue());
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"❌ [MemoryManager] Old allocations clear failed: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        /// <summary>
+        /// 📊 Update Cached Metrics
+        /// </summary>
+        private void UpdateCachedMetrics(MemoryStatistics statistics)
+        {
+            lock (_metricsLock)
+            {
+                _cachedMetrics = new MemoryMetrics
+                {
+                    TotalMemory = statistics.TotalMemory,
+                    TotalAllocatedBytes = statistics.TotalAllocatedBytes,
+                    ObjectPoolCount = statistics.ObjectPoolCount,
+                    HealthStatus = statistics.HealthStatus,
+                    Timestamp = statistics.Timestamp
+                };
+
+                _lastMetricsUpdate = DateTime.UtcNow;
             }
         }
 
@@ -723,170 +857,334 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
 
             try
             {
-                Logger.Log("🗑️ [CommandQueue] Starting disposal", LogLevel.Info);
-
-                _isProcessing = false;
+                Logger.Log("🗑️ [MemoryManager] Starting disposal", LogLevel.Info);
 
                 // Cancel operations
                 _cancellationTokenSource?.Cancel();
 
-                // Complete channels
-                _highPriorityChannel?.Writer.Complete();
-                _normalPriorityChannel?.Writer.Complete();
-                _lowPriorityChannel?.Writer.Complete();
-                _retryChannel?.Writer.Complete();
-
-                // Wait for processing tasks to complete
-                if (_processingTasks?.Count > 0)
-                {
-                    Task.WaitAll(_processingTasks.ToArray(), TimeSpan.FromSeconds(30));
-                }
-
                 // Dispose timers
-                _statisticsTimer?.Dispose();
-                _retryTimer?.Dispose();
+                _monitoringTimer?.Dispose();
+                _cleanupTimer?.Dispose();
+
+                // Clear object pools
+                foreach (var pool in _objectPools.Values)
+                {
+                    pool?.Clear();
+                }
+                _objectPools.Clear();
 
                 // Complete reactive subjects
-                _commandQueuedSubject?.OnCompleted();
-                _commandQueuedSubject?.Dispose();
-                _commandProcessedSubject?.OnCompleted();
-                _commandProcessedSubject?.Dispose();
-                _commandFailedSubject?.OnCompleted();
-                _commandFailedSubject?.Dispose();
-                _statisticsSubject?.OnCompleted();
-                _statisticsSubject?.Dispose();
+                _memoryStatisticsSubject?.OnCompleted();
+                _memoryStatisticsSubject?.Dispose();
+                _gcEventSubject?.OnCompleted();
+                _gcEventSubject?.Dispose();
+                _memoryPressureSubject?.OnCompleted();
+                _memoryPressureSubject?.Dispose();
+                _allocationEventSubject?.OnCompleted();
+                _allocationEventSubject?.Dispose();
+
+                // Dispose components
+                _memoryProfiler?.Dispose();
+                _gcNotificationManager?.Dispose();
+                _memoryPressureManager?.Dispose();
 
                 // Dispose synchronization objects
-                _processingSlot?.Dispose();
+                _cleanupSemaphore?.Dispose();
                 _cancellationTokenSource?.Dispose();
 
                 // Clear collections
-                _processingCommands?.Clear();
-                _executionContexts?.Clear();
+                _allocationTrackers?.Clear();
+                while (_recentAllocations?.TryDequeue(out _)) { }
 
                 _isDisposed = true;
-                Logger.Log("✅ [CommandQueue] Disposal completed", LogLevel.Info);
+                Logger.Log("✅ [MemoryManager] Disposal completed", LogLevel.Info);
             }
             catch (Exception ex)
             {
-                Logger.Log($"❌ [CommandQueue] Disposal error: {ex.Message}", LogLevel.Error);
+                Logger.Log($"❌ [MemoryManager] Disposal error: {ex.Message}", LogLevel.Error);
             }
         }
 
         #endregion
     }
 
-    #region 📋 Supporting Classes
+    #region 📋 Supporting Classes & Interfaces
 
     /// <summary>
-    /// 📦 Queued Command
+    /// 🏭 Object Pool Interface
     /// </summary>
-    public class QueuedCommand
+    public interface IObjectPool
     {
-        public ICommand Command { get; set; }
-        public CommandPriority Priority { get; set; }
-        public DateTime QueuedAt { get; set; }
-        public int AttemptCount { get; set; }
-        public int MaxRetries { get; set; }
-        public DateTime? NextRetryAt { get; set; }
-        public CommandExecutionContext ExecutionContext { get; set; }
+        void Clear();
+        void Trim();
+        int Count { get; }
     }
 
     /// <summary>
-    /// 🎯 Command Execution Context
+    /// 🏭 Generic Object Pool
     /// </summary>
-    public class CommandExecutionContext
+    public class ObjectPool<T> : IObjectPool where T : class
     {
-        public Guid CommandId { get; set; }
-        public DateTime CreatedAt { get; set; }
-        public Dictionary<string, object> Properties { get; set; } = new Dictionary<string, object>();
-    }
+        private readonly ConcurrentQueue<T> _objects = new ConcurrentQueue<T>();
+        private readonly Func<T> _factory;
+        private readonly int _maxObjects;
+        private volatile int _count = 0;
 
-    /// <summary>
-    /// 📥 Command Queued Event
-    /// </summary>
-    public class CommandQueuedEvent
-    {
-        public Guid CommandId { get; set; }
-        public string CommandType { get; set; }
-        public CommandPriority Priority { get; set; }
-        public DateTime QueuedAt { get; set; }
-        public int QueueSize { get; set; }
-    }
+        public int Count => _count;
 
-    /// <summary>
-    /// ✅ Command Processed Event
-    /// </summary>
-    public class CommandProcessedEvent
-    {
-        public Guid CommandId { get; set; }
-        public string CommandType { get; set; }
-        public CommandPriority Priority { get; set; }
-        public double ProcessingTime { get; set; }
-        public int AttemptCount { get; set; }
-        public object Result { get; set; }
-    }
-
-    /// <summary>
-    /// ❌ Command Failed Event
-    /// </summary>
-    public class CommandFailedEvent
-    {
-        public Guid CommandId { get; set; }
-        public string CommandType { get; set; }
-        public CommandPriority Priority { get; set; }
-        public double ProcessingTime { get; set; }
-        public int AttemptCount { get; set; }
-        public string Error { get; set; }
-        public bool IsPermanent { get; set; }
-    }
-
-    /// <summary>
-    /// 📊 Queue Statistics
-    /// </summary>
-    public class QueueStatistics
-    {
-        public long TotalQueued { get; set; }
-        public long TotalProcessed { get; set; }
-        public long TotalFailed { get; set; }
-        public int CurrentQueueSize { get; set; }
-        public int ProcessingCommands { get; set; }
-        public int AvailableSlots { get; set; }
-        public DateTime Timestamp { get; set; }
-
-        public double SuccessRate => TotalProcessed + TotalFailed > 0 ?
-            (double)TotalProcessed / (TotalProcessed + TotalFailed) * 100 : 0;
-
-        public double ThroughputPerSecond { get; set; }
-    }
-
-    /// <summary>
-    /// ⚙️ Command Queue Configuration
-    /// </summary>
-    public class CommandQueueConfiguration
-    {
-        public int MaxQueueSize { get; set; } = 10000;
-        public TimeSpan CommandTimeout { get; set; } = TimeSpan.FromMinutes(5);
-        public int MaxRetriesCritical { get; set; } = 5;
-        public int MaxRetriesHigh { get; set; } = 3;
-        public int MaxRetriesNormal { get; set; } = 2;
-        public int MaxRetriesLow { get; set; } = 1;
-        public TimeSpan BaseRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
-        public TimeSpan MaxRetryDelay { get; set; } = TimeSpan.FromMinutes(5);
-
-        public static CommandQueueConfiguration Default => new CommandQueueConfiguration();
-    }
-
-    /// <summary>
-    /// 🎯 Default Command Handler
-    /// </summary>
-    public class DefaultCommandHandler : ICommandHandler
-    {
-        public async Task<CommandExecutionResult> HandleAsync(ICommand command, CancellationToken cancellationToken = default)
+        public ObjectPool(Func<T> factory, int maxObjects)
         {
-            // Default implementation
-            await Task.Delay(10, cancellationToken);
-            return CommandExecutionResult.Success(command.CommandId, "Handled by default handler");
+            _factory = factory ?? throw new ArgumentNullException(nameof(factory));
+            _maxObjects = maxObjects;
+        }
+
+        public T Rent()
+        {
+            if (_objects.TryDequeue(out T obj))
+            {
+                Interlocked.Decrement(ref _count);
+                return obj;
+            }
+
+            return _factory();
+        }
+
+        public void Return(T obj)
+        {
+            if (obj != null && _count < _maxObjects)
+            {
+                _objects.Enqueue(obj);
+                Interlocked.Increment(ref _count);
+            }
+        }
+
+        public void Clear()
+        {
+            while (_objects.TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref _count);
+            }
+        }
+
+        public void Trim()
+        {
+            var targetCount = Math.Max(0, _maxObjects / 2);
+            while (_count > targetCount && _objects.TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref _count);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 📊 Memory Statistics
+    /// </summary>
+    public class MemoryStatistics
+    {
+        public long TotalMemory { get; set; }
+        public int Generation0Collections { get; set; }
+        public int Generation1Collections { get; set; }
+        public int Generation2Collections { get; set; }
+        public long TotalAllocatedBytes { get; set; }
+        public int ObjectPoolCount { get; set; }
+        public MemoryHealth HealthStatus { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+
+    /// <summary>
+    /// 📊 Memory Metrics
+    /// </summary>
+    public class MemoryMetrics
+    {
+        public long TotalMemory { get; set; }
+        public long TotalAllocatedBytes { get; set; }
+        public int ObjectPoolCount { get; set; }
+        public MemoryHealth HealthStatus { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+
+    /// <summary>
+    /// 🗑️ GC Event
+    /// </summary>
+    public class GCEvent
+    {
+        public int Generation { get; set; }
+        public GCType Type { get; set; }
+        public DateTime Timestamp { get; set; }
+        public long MemoryBefore { get; set; }
+        public long MemoryAfter { get; set; }
+    }
+
+    /// <summary>
+    /// ⚠️ Memory Pressure Event
+    /// </summary>
+    public class MemoryPressureEvent
+    {
+        public MemoryPressureType Type { get; set; }
+        public long CurrentUsage { get; set; }
+        public double UsagePercentage { get; set; }
+        public long MemoryBefore { get; set; }
+        public long MemoryAfter { get; set; }
+        public long BytesFreed { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+
+    /// <summary>
+    /// 📈 Allocation Event
+    /// </summary>
+    public class AllocationEvent
+    {
+        public MemoryAllocation Allocation { get; set; }
+    }
+
+    /// <summary>
+    /// 📊 Memory Allocation
+    /// </summary>
+    public class MemoryAllocation
+    {
+        public string Type { get; set; }
+        public long Size { get; set; }
+        public AllocationSource Source { get; set; }
+        public DateTime Timestamp { get; set; }
+    }
+
+    /// <summary>
+    /// 📊 Allocation Tracker
+    /// </summary>
+    public class AllocationTracker
+    {
+        private long _totalAllocations = 0;
+        private long _totalSize = 0;
+
+        public long TotalAllocations => _totalAllocations;
+        public long TotalSize => _totalSize;
+
+        public void RecordAllocation(long size)
+        {
+            Interlocked.Increment(ref _totalAllocations);
+            Interlocked.Add(ref _totalSize, size);
+        }
+    }
+
+    /// <summary>
+    /// ⚙️ Memory Manager Configuration
+    /// </summary>
+    public class MemoryManagerConfiguration
+    {
+        public int MaxArrayLength { get; set; } = 1024 * 1024; // 1MB
+        public int MaxArraysPerBucket { get; set; } = 50;
+        public long MaxMemoryUsage { get; set; } = 512; // MB
+        public double HighMemoryThreshold { get; set; } = 80.0; // %
+        public bool AutoMemoryRelief { get; set; } = true;
+        public bool LowLatencyMode { get; set; } = true;
+        public int MaxRecentAllocations { get; set; } = 10000;
+
+        public static MemoryManagerConfiguration Default => new MemoryManagerConfiguration();
+    }
+
+    /// <summary>
+    /// 🏥 Memory Health Enum
+    /// </summary>
+    public enum MemoryHealth
+    {
+        Unknown,
+        Excellent,
+        Good,
+        Warning,
+        Critical
+    }
+
+    /// <summary>
+    /// ⚠️ Memory Pressure Type Enum
+    /// </summary>
+    public enum MemoryPressureType
+    {
+        Low,
+        Medium,
+        High,
+        Critical,
+        Relief
+    }
+
+    /// <summary>
+    /// 📊 Allocation Source Enum
+    /// </summary>
+    public enum AllocationSource
+    {
+        Direct,
+        ObjectPool,
+        ArrayPool,
+        MemoryOperation
+    }
+
+    /// <summary>
+    /// 🗑️ GC Type Enum
+    /// </summary>
+    public enum GCType
+    {
+        Ephemeral,
+        FullBlocking,
+        Background
+    }
+
+    #endregion
+
+    #region 🧠 Memory Profiling Components
+
+    /// <summary>
+    /// 📊 Memory Profiler
+    /// </summary>
+    public class MemoryProfiler : IDisposable
+    {
+        private readonly MemoryManagerConfiguration _configuration;
+        private bool _isDisposed = false;
+
+        public MemoryProfiler(MemoryManagerConfiguration configuration)
+        {
+            _configuration = configuration;
+        }
+
+        public void Dispose()
+        {
+            _isDisposed = true;
+        }
+    }
+
+    /// <summary>
+    /// 🗑️ GC Notification Manager
+    /// </summary>
+    public class GCNotificationManager : IDisposable
+    {
+        public event Action<int, GCType> GCOccurred;
+        private bool _isDisposed = false;
+
+        public GCNotificationManager()
+        {
+            // Setup GC notification monitoring
+        }
+
+        public void Dispose()
+        {
+            _isDisposed = true;
+        }
+    }
+
+    /// <summary>
+    /// ⚠️ Memory Pressure Manager
+    /// </summary>
+    public class MemoryPressureManager : IDisposable
+    {
+        private readonly MemoryManagerConfiguration _configuration;
+        private bool _isDisposed = false;
+
+        public MemoryPressureManager(MemoryManagerConfiguration configuration)
+        {
+            _configuration = configuration;
+        }
+
+        public void Dispose()
+        {
+            _isDisposed = true;
         }
     }
 

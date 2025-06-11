@@ -1,8 +1,8 @@
 ﻿// ==============================================
-//  UC1_DataManager.cs
+//  UC1_DataManager.cs - FIXED ERRORS
 //  AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
 //  Data Management & File Operations System
-//  Extracted from UC_CONTROL_SET_1.cs
+//  แก้ไข: Timer.Stop() -> Timer.Change(), WriteAllTextAsync -> WriteAllText
 // ==============================================
 
 using System;
@@ -36,8 +36,8 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
         private readonly Dictionary<string, string> _backupPaths;
         private bool _isDisposed = false;
 
-        // Debounced save system
-        private readonly Dictionary<string, Timer> _saveTimers;
+        // Debounced save system - แก้ไข Timer type
+        private readonly Dictionary<string, System.Threading.Timer> _saveTimers;
         private readonly object _timerLock = new object();
 
         #endregion
@@ -50,7 +50,7 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
             _fileLock = new SemaphoreSlim(1, 1);
             _lastSaveTime = new Dictionary<string, DateTime>();
             _backupPaths = new Dictionary<string, string>();
-            _saveTimers = new Dictionary<string, Timer>();
+            _saveTimers = new Dictionary<string, System.Threading.Timer>();
 
             EnsureDirectoryExists();
             InitializeBackupSystem();
@@ -426,21 +426,21 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
 
         #endregion
 
-        #region Debounced Save System
+        #region Debounced Save System - แก้ไข Timer
 
         private void TriggerDebouncedSave(string dataType, string trigger)
         {
             lock (_timerLock)
             {
-                // Stop existing timer if any
-                if (_saveTimers.TryGetValue(dataType, out Timer existingTimer))
+                // Stop existing timer if any - แก้ไข: ใช้ Change() แทน Stop()
+                if (_saveTimers.TryGetValue(dataType, out System.Threading.Timer existingTimer))
                 {
-                    existingTimer.Stop();
+                    existingTimer.Change(Timeout.Infinite, Timeout.Infinite); // หยุด timer
                     existingTimer.Dispose();
                 }
 
                 // Create new timer
-                var timer = new Timer(async _ =>
+                var timer = new System.Threading.Timer(async _ =>
                 {
                     await PerformDebouncedSave(dataType, trigger);
                 }, null, 1500, Timeout.Infinite); // 1.5 second delay
@@ -463,7 +463,7 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
                 // Clean up timer
                 lock (_timerLock)
                 {
-                    if (_saveTimers.TryGetValue(dataType, out Timer timer))
+                    if (_saveTimers.TryGetValue(dataType, out System.Threading.Timer timer))
                     {
                         timer.Dispose();
                         _saveTimers.Remove(dataType);
@@ -527,7 +527,9 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
                                      $"LastTjSetpoint_1: {manual?.LastTjSetpoint_1}";
 
                 string emergencyFile = Path.Combine(_baseDirectory, $"Emergency_Save_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
-                await File.WriteAllTextAsync(emergencyFile, emergencyData);
+
+                // แก้ไข: ใช้ File.WriteAllText แทน WriteAllTextAsync สำหรับ .NET Framework
+                await Task.Run(() => File.WriteAllText(emergencyFile, emergencyData));
 
                 Logger.Log($"[UC1_DataManager] Emergency backup created: {emergencyFile}", LogLevel.Info);
                 return true;
@@ -653,11 +655,12 @@ namespace AUTOMATED_REACTOR_CONTROL_Ver4_FINAL
             {
                 try
                 {
-                    // Dispose timers
+                    // Dispose timers - แก้ไข: ใช้ Change() และ Dispose()
                     lock (_timerLock)
                     {
                         foreach (var timer in _saveTimers.Values)
                         {
+                            timer?.Change(Timeout.Infinite, Timeout.Infinite);
                             timer?.Dispose();
                         }
                         _saveTimers.Clear();
